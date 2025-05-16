@@ -24,10 +24,10 @@ export async function POST(req: Request) {
     - Use <ul> and <li> tags for bullet points
     - Use <h3> tags for subheadings when needed but don't repeat the initial title in the first paragraph
     - Ensure proper spacing with appropriate HTML tags
-    
+
     The summary should be well-structured and easy to scan, while maintaining accuracy and completeness.
     Please analyze the text thoroughly before starting the summary.
-    
+
     IMPORTANT: Output ONLY valid HTML without any markdown or plain text line breaks.
   `;
 
@@ -54,6 +54,7 @@ export async function POST(req: Request) {
         content: text,
       },
     ],
+    mode: "json",
     // maxTokens: 800,
   });
 
