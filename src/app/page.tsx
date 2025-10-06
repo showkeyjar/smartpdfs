@@ -1,11 +1,10 @@
 "use client";
 
-import { useS3Upload } from "next-s3-upload";
+// 移除S3上传依赖，改为本地处理
 import { Button } from "@/components/ui/button";
 import {
   Chunk,
   chunkPdf,
-  generateImage,
   generateQuickSummary,
   summarizeStream,
 } from "@/lib/summarize";
@@ -13,15 +12,16 @@ import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { FormEvent, useState } from "react";
 import "pdfjs-dist/legacy/build/pdf.worker.mjs";
 import { MenuIcon, SquareArrowOutUpRight } from "lucide-react";
-import { sharePdf } from "@/app/actions";
 import ActionButton from "@/components/ui/action-button";
 import Link from "next/link";
 import { useToast } from "@/hooks/use-toast";
 import { HomeLandingDrop } from "@/components/HomeLandingDrop";
 import SummaryContent from "@/components/ui/summary-content";
 import TableOfContents from "@/components/ui/table-of-contents";
+import AIStatusBadge from "@/components/AIStatusBadge";
+import ProgressiveSummary from "@/components/ProgressiveSummary";
 
-export type StatusApp = "idle" | "parsing" | "generating";
+export type StatusApp = "idle" | "parsing" | "generating" | "progressive";
 
 export default function Home() {
   const [status, setStatus] = useState<StatusApp>("idle");
@@ -35,9 +35,10 @@ export default function Home() {
     title: string;
     summary: string;
   }>();
-  const [image, setImage] = useState<string>();
+  // 移除图片生成功能
   const [showMobileContents, setShowMobileContents] = useState(true);
-  const { uploadToS3 } = useS3Upload();
+  const [selectedLanguage, setSelectedLanguage] = useState("chinese");
+  // 不再需要S3上传
 
   const { toast } = useToast();
 
@@ -46,23 +47,36 @@ export default function Home() {
     const language = new FormData(e.currentTarget).get("language");
 
     if (!file || typeof language !== "string") return;
+    
+    setSelectedLanguage(language);
 
     setStatus("parsing");
 
-    const uploadedPdfPromise = uploadToS3(file);
+    // 生成本地PDF URL用于显示
+    const localPdfUrl = URL.createObjectURL(file);
 
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await getDocument({ data: arrayBuffer }).promise;
-    if (pdf.numPages > 500) {
-      toast({
-        variant: "destructive",
-        title: "PDF too large (500 pages max)",
-        description: "That PDF has too many pages. Please use a smaller PDF.",
-      });
-      setStatus("idle");
+    
+    // 使用智能分块策略处理大文档，无页数限制
+    console.log(`处理PDF: ${pdf.numPages} 页`);
+    
+    // 根据文档大小选择处理策略
+    const useProgressiveProcessing = pdf.numPages > 20; // 降低阈值，更多文档使用渐进式处理
+    
+    if (useProgressiveProcessing) {
+      console.log("使用渐进式处理模式（大文档）");
+      
+      // 使用基础分块，然后渐进式处理
+      const localChunks = await chunkPdf(pdf);
+      setChunks(localChunks);
+      setFileUrl(localPdfUrl);
+      setStatus("progressive"); // 设置为渐进式处理状态
+      
       return;
     }
-
+    
+    // 传统处理模式（小文档）
     const localChunks = await chunkPdf(pdf);
     const totalText = localChunks.reduce(
       (acc, chunk) => acc + chunk.text.length,
@@ -72,9 +86,9 @@ export default function Home() {
     if (totalText < 500) {
       toast({
         variant: "destructive",
-        title: "Unable to process PDF",
+        title: "无法处理PDF",
         description:
-          "The PDF appears to be a scanned document or contains too little text to process. Please ensure the PDF contains searchable text.",
+          "该PDF似乎是扫描文档或包含的可搜索文本太少。请确保PDF包含可搜索的文本。",
       });
       setFile(undefined);
       setStatus("idle");
@@ -102,38 +116,51 @@ export default function Home() {
     await stream.pipeTo(writeStream, { signal: controller.signal });
 
     const quickSummary = await generateQuickSummary(summarizedChunks, language);
-    const imageUrl = await generateImage(quickSummary.summary);
 
     setQuickSummary(quickSummary);
-    setImage(imageUrl);
-
-    const uploadedPdf = await uploadedPdfPromise;
-    setFileUrl(uploadedPdf.url);
+    setFileUrl(localPdfUrl);
 
     setActiveChunkIndex((activeChunkIndex) =>
       activeChunkIndex === null ? "quick-summary" : activeChunkIndex,
     );
 
-    await sharePdf({
+    // 本地存储摘要结果（可选）
+    const summaryData = {
       pdfName: file.name,
-      pdfUrl: uploadedPdf.url,
-      imageUrl: imageUrl,
-      sections: [
-        {
-          type: "quick-summary",
-          title: quickSummary.title,
-          summary: quickSummary.summary,
-          position: 0,
-        },
-        ...summarizedChunks.map((chunk, index) => ({
-          type: "summary",
-          title: chunk?.title ?? "",
-          summary: chunk?.summary ?? "",
-          position: index + 1,
-        })),
-      ],
-    });
+      timestamp: new Date().toISOString(),
+      summary: quickSummary.summary,
+      chunks: summarizedChunks
+    };
+    
+    // 保存到localStorage（可选功能）
+    try {
+      localStorage.setItem(`pdf-summary-${Date.now()}`, JSON.stringify(summaryData));
+    } catch (e) {
+      console.log("无法保存到本地存储:", e);
+    }
   }
+
+  // 处理渐进式摘要完成
+  const handleProgressiveComplete = (summarizedChunks: Chunk[], quickSummaryData: {title: string, summary: string}) => {
+    setChunks(summarizedChunks);
+    setQuickSummary(quickSummaryData);
+    setStatus("generating"); // 切换到正常显示模式
+    setActiveChunkIndex("quick-summary");
+    
+    // 本地存储摘要结果（可选）
+    const summaryData = {
+      pdfName: file?.name || "document",
+      timestamp: new Date().toISOString(),
+      summary: quickSummaryData.summary,
+      chunks: summarizedChunks
+    };
+    
+    try {
+      localStorage.setItem(`pdf-summary-${Date.now()}`, JSON.stringify(summaryData));
+    } catch (e) {
+      console.log("无法保存到本地存储:", e);
+    }
+  };
 
   return (
     <div>
@@ -144,12 +171,40 @@ export default function Home() {
           setFile={(file) => file && setFile(file)}
           handleSubmit={handleSubmit}
         />
+      ) : status === "progressive" ? (
+        <div className="mt-6 px-4 md:mt-10">
+          <div className="mx-auto max-w-4xl">
+            <div className="flex items-center justify-between rounded-lg border border-gray-250 px-4 py-2 md:px-6 md:py-3 mb-6">
+              <div className="inline-flex items-center gap-4">
+                <p className="md:text-lg">{file?.name}</p>
+                <AIStatusBadge />
+              </div>
+              <div className="flex flex-row gap-2">
+                {fileUrl && (
+                  <Link href={fileUrl} target="_blank">
+                    <ActionButton>
+                      <SquareArrowOutUpRight size={14} />
+                      <span>查看原PDF</span>
+                    </ActionButton>
+                  </Link>
+                )}
+              </div>
+            </div>
+            
+            <ProgressiveSummary
+              chunks={chunks}
+              onComplete={handleProgressiveComplete}
+              language={selectedLanguage}
+            />
+          </div>
+        </div>
       ) : (
         <div className="mt-6 px-4 md:mt-10">
           <div className="mx-auto max-w-3xl">
             <div className="flex items-center justify-between rounded-lg border border-gray-250 px-4 py-2 md:px-6 md:py-3">
               <div className="inline-flex items-center gap-4">
                 <p className="md:text-lg">{file?.name}</p>
+                <AIStatusBadge />
               </div>
 
               <div className="flex flex-row gap-2">
@@ -157,7 +212,7 @@ export default function Home() {
                   <Link href={fileUrl} target="_blank">
                     <ActionButton>
                       <SquareArrowOutUpRight size={14} />
-                      <span>Original PDF</span>
+                      <span>查看原PDF</span>
                     </ActionButton>
                   </Link>
                 )}
@@ -192,7 +247,6 @@ export default function Home() {
                   <SummaryContent
                     title={quickSummary?.title}
                     summary={quickSummary?.summary}
-                    imageUrl={image}
                   />
                 ) : activeChunkIndex !== null ? (
                   <SummaryContent

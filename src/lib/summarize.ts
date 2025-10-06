@@ -1,11 +1,15 @@
 import { PDFDocumentProxy } from "pdfjs-dist";
 import assert from "assert";
+import { EnhancedSummarizer, EnhancedChunk, SUMMARY_LEVELS } from "./enhanced-summarize";
 
 export type Chunk = {
   text: string;
   summary?: string;
   title?: string;
 };
+
+// 向后兼容的增强摘要器实例
+const enhancedSummarizer = new EnhancedSummarizer();
 
 export async function getPdfText(pdf: PDFDocumentProxy) {
   const numPages = pdf.numPages;
@@ -44,12 +48,8 @@ export async function getPdfText(pdf: PDFDocumentProxy) {
 }
 
 export async function chunkPdf(pdf: PDFDocumentProxy) {
-  // const chunkCharSize = 6000; // 100k
-  // const chunkCharSize = 100_000;
+  // 保持向后兼容的简单分块
   const maxChunkSize = 50_000;
-  // ideally have at least 4 chunks
-  // chunk size = total chars / 4 OR 100k, whichever is smaller
-
   const fullText = await getPdfText(pdf);
 
   const chunks: Chunk[] = [];
@@ -63,35 +63,89 @@ export async function chunkPdf(pdf: PDFDocumentProxy) {
   return chunks;
 }
 
+// 新的增强分块函数
+export async function chunkPdfEnhanced(pdf: PDFDocumentProxy): Promise<EnhancedChunk[]> {
+  return enhancedSummarizer.chunkPdfEnhanced(pdf);
+}
+
+// 智能摘要函数，自动选择最佳策略
+export async function summarizeIntelligent(
+  pdf: PDFDocumentProxy, 
+  language: string = "中文",
+  summaryLevel: keyof typeof SUMMARY_LEVELS = "medium"
+) {
+  const chunks = await enhancedSummarizer.chunkPdfEnhanced(pdf);
+  const levelConfig = SUMMARY_LEVELS[summaryLevel];
+  
+  return enhancedSummarizer.summarizeWithHierarchy(chunks, language, levelConfig);
+}
+
 export async function summarizeStream(chunks: Chunk[], language: string) {
+  const { getAvailableProvider, hasAIService } = await import('./ai-config');
+  const provider = getAvailableProvider();
+  
   let reading = true;
   const stream = new ReadableStream({
     async start(controller) {
-      const promises = chunks.map(async (chunk) => {
-        const text = chunk.text;
-        const response = await fetch("/api/summarize", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({ text, language }),
-        });
-        let data;
-        try {
-          data = await response.json();
-          if (reading) {
-            controller.enqueue({
-              ...chunk,
-              summary: data.summary,
-              title: data.title,
-            });
+      // 如果有AI服务，使用并行处理；否则使用串行处理避免过载
+      if (hasAIService()) {
+        const promises = chunks.map(async (chunk, index) => {
+          try {
+            // 添加延迟避免API限制
+            await new Promise(resolve => setTimeout(resolve, index * 100));
+            
+            const data = await provider.generateSummary(chunk.text, language);
+            if (reading) {
+              controller.enqueue({
+                ...chunk,
+                summary: data.summary,
+                title: data.title,
+              });
+            }
+          } catch (e) {
+            console.log(`摘要生成错误 (chunk ${index}):`, e);
+            // 降级到简单摘要
+            if (reading) {
+              const fallbackTitle = chunk.text.split(/[.!?。！？]/)[0]?.slice(0, 30) + "..." || `第${index + 1}部分`;
+              controller.enqueue({
+                ...chunk,
+                summary: `<p>${chunk.text.slice(0, 200)}...</p>`,
+                title: fallbackTitle,
+              });
+            }
           }
-        } catch (e) {
-          console.log(e);
-        }
-      });
+        });
 
-      await Promise.all(promises);
+        await Promise.all(promises);
+      } else {
+        // 本地处理模式，串行处理
+        for (let i = 0; i < chunks.length; i++) {
+          if (!reading) break;
+          
+          const chunk = chunks[i];
+          try {
+            const data = await provider.generateSummary(chunk.text, language);
+            if (reading) {
+              controller.enqueue({
+                ...chunk,
+                summary: data.summary,
+                title: data.title,
+              });
+            }
+          } catch (e) {
+            console.log(`本地摘要错误 (chunk ${i}):`, e);
+            if (reading) {
+              const fallbackTitle = chunk.text.split(/[.!?。！？]/)[0]?.slice(0, 30) + "..." || `第${i + 1}部分`;
+              controller.enqueue({
+                ...chunk,
+                summary: `<p>${chunk.text.slice(0, 200)}...</p>`,
+                title: fallbackTitle,
+              });
+            }
+          }
+        }
+      }
+
       controller.close();
     },
 
@@ -105,39 +159,38 @@ export async function summarizeStream(chunks: Chunk[], language: string) {
 }
 
 export async function generateQuickSummary(chunks: Chunk[], language: string) {
+  const { getAvailableProvider } = await import('./ai-config');
+  const provider = getAvailableProvider();
+  
   const allSummaries = chunks.map((chunk) => chunk.summary).join("\n\n");
 
-  const response = await fetch("/api/summarize", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ text: allSummaries, language }),
-  });
+  try {
+    const result = await provider.generateSummary(allSummaries, language);
+    
+    console.log("title", result.title);
+    assert.ok(typeof result.title === "string");
+    assert.ok(typeof result.summary === "string");
 
-  const { title, summary } = await response.json();
-
-  console.log("title", title);
-  assert.ok(typeof title === "string");
-  assert.ok(typeof summary === "string");
-
-  return { title, summary };
+    return result;
+  } catch (error) {
+    console.log("快速摘要生成失败，使用降级方案:", error);
+    
+    // 降级方案：简单合并
+    return {
+      title: "文档摘要",
+      summary: `<p>本文档包含 ${chunks.length} 个主要部分：</p><ul>${
+        chunks.map((chunk, i) => `<li>第${i+1}部分: ${chunk.title || '内容片段'}</li>`).join('')
+      }</ul>`
+    };
+  }
 }
 
 export type ImageGenerationResponse = {
   url: string;
 };
 
-export async function generateImage(summary: string) {
-  const response = await fetch("/api/image", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ text: summary }),
-  });
-
-  const data: ImageGenerationResponse = await response.json();
-
-  return data.url;
+// 图片生成功能已移除，改为可选功能
+export async function generateImage(summary: string): Promise<string> {
+  // 返回默认图片或不生成图片
+  return "/default-pdf-cover.jpg";
 }

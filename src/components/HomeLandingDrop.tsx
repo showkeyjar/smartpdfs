@@ -30,12 +30,15 @@ export const HomeLandingDrop = ({
   return (
     <div className="mx-auto mt-6 max-w-lg md:mt-10">
       <h1 className="text-center text-4xl font-bold md:text-5xl">
-        Summarize PDFs
-        <br /> in seconds
+        智能PDF摘要
+        <br /> 秒级生成
       </h1>
       <p className="mx-auto mt-6 max-w-md text-balance text-center leading-snug md:text-lg md:leading-snug">
-        Upload a <strong>PDF</strong> to get a quick, clear, and shareable
-        summary.
+        上传 <strong>PDF</strong> 文档，获得快速、清晰的智能摘要。
+        <br />
+        <span className="text-sm text-gray-600 mt-2 block">
+          支持大型文档 • 无页数限制 • 多语言摘要 • 本地处理
+        </span>
       </p>
 
       <form
@@ -52,7 +55,7 @@ export const HomeLandingDrop = ({
         <div className="relative">
           <div className="flex flex-col rounded-xl bg-white px-6 py-6 shadow md:px-12 md:py-8">
             <label className="text-gray-500" htmlFor="file">
-              Upload PDF
+              上传PDF文档
             </label>
             <Dropzone
               multiple={false}
@@ -61,14 +64,7 @@ export const HomeLandingDrop = ({
               }}
               onDrop={(acceptedFiles) => {
                 const file = acceptedFiles[0];
-                if (file.size > 15 * 1024 * 1024) {
-                  // 10MB in bytes
-                  toast({
-                    title: "📁 File Too Large",
-                    description: "⚠️ File size must be less than 15MB",
-                  });
-                  return;
-                }
+                // 移除文件大小限制，使用智能分块策略处理大文档
                 setFile(file);
               }}
             >
@@ -83,7 +79,7 @@ export const HomeLandingDrop = ({
                       <p>{file.name}</p>
                     ) : (
                       <Button type="button" className="md:text-base">
-                        Select PDF
+                        选择PDF文件
                       </Button>
                     )}
                   </div>
@@ -91,22 +87,27 @@ export const HomeLandingDrop = ({
               )}
             </Dropzone>
             <label className="mt-8 text-gray-500" htmlFor="language">
-              Language
+              摘要语言
             </label>
-            <Select defaultValue="english" name="language">
+            <Select defaultValue="chinese" name="language">
               <SelectTrigger className="mt-2 bg-gray-100" id="language">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 {[
+                  { label: "中文 (Chinese)", value: "chinese" },
                   { label: "English", value: "english" },
-                  { label: "German", value: "german" },
-                  { label: "French", value: "french" },
-                  { label: "Italian", value: "italian" },
-                  { label: "Portuguese", value: "portuguese" },
-                  { label: "Hindi", value: "hindi" },
-                  { label: "Spanish", value: "spanish" },
-                  { label: "Thai", value: "thai" },
+                  { label: "日本語 (Japanese)", value: "japanese" },
+                  { label: "한국어 (Korean)", value: "korean" },
+                  { label: "Español (Spanish)", value: "spanish" },
+                  { label: "Français (French)", value: "french" },
+                  { label: "Deutsch (German)", value: "german" },
+                  { label: "Italiano (Italian)", value: "italian" },
+                  { label: "Português (Portuguese)", value: "portuguese" },
+                  { label: "Русский (Russian)", value: "russian" },
+                  { label: "العربية (Arabic)", value: "arabic" },
+                  { label: "हिन्दी (Hindi)", value: "hindi" },
+                  { label: "ไทย (Thai)", value: "thai" },
                 ].map((language) => (
                   <SelectItem key={language.value} value={language.value}>
                     {language.label}
@@ -123,7 +124,7 @@ export const HomeLandingDrop = ({
               disabled={status === "parsing"}
             >
               <SparklesIcon />
-              Generate
+              生成智能摘要
             </Button>
           </div>
         </div>
